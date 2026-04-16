@@ -1,0 +1,82 @@
+import pandas as pd
+import os
+
+# 1. Get the directory where this python script is located
+script_dir = os.path.dirname(os.path.abspath(__file__))
+
+# 2. Join that directory path with your input and output file names
+input_file = os.path.join(script_dir, 'foldingandcutting.csv')
+output_file = os.path.join(script_dir, 'scored_foldingandcutting.csv')
+
+# 3. Load your specific metadata file using the absolute path
+# This prevents the FileNotFoundError
+df = pd.read_csv(input_file)
+
+def calculate_difficulty_row(row):
+    fold = str(row['Fold Type']).lower()
+    mode = str(row['Mode']).lower()
+    cuts = row['Cuts']
+    
+    # 1. Fold Complexity
+    if 'square_fold' in fold:
+        fold_score = 1
+    elif 'rectangle_fold' in fold:
+        fold_score = 2
+    elif 'rectangle_triangle_fold' in fold:
+        fold_score = 3
+    elif 'double_triangle_fold' in fold:
+        fold_score = 4
+    else:
+        fold_score = 1 # Default
+        
+    # 2. Cut Location (Mode)
+    if mode == 'edge':
+        location_score = 1
+    elif mode == 'corner':
+        location_score = 2
+    elif mode == 'both':
+        location_score = 3
+    else:
+        location_score = 1 # Default
+        
+    # 3. Cut Shape (extracted from fold type text)
+    if 'spline' in fold:
+        shape_score = 2
+    else:
+        shape_score = 1
+        
+    # 4. Number of Cuts
+    try:
+        cuts = int(cuts)
+    except (ValueError, TypeError):
+        cuts = 1
+        
+    if cuts <= 2:
+        cuts_score = 1
+    elif cuts == 3:
+        cuts_score = 2
+    else:
+        cuts_score = 3
+        
+    # Calculate Total
+    total_score = fold_score + location_score + shape_score + cuts_score
+    
+    # Categorize 
+    if total_score <= 5:
+        category = "Easy"
+    elif total_score <= 8:
+        category = "Medium"
+    elif total_score <= 10:
+        category = "Hard"
+    else:
+        category = "Extreme"
+        
+    return pd.Series([total_score, category])
+
+# 4. Apply the function row by row to create the two new columns
+df[['Calculated_Difficulty_Score', 'Difficulty_Category']] = df.apply(calculate_difficulty_row, axis=1)
+
+# 5. Save the updated data using the absolute path
+df.to_csv(output_file, index=False)
+
+print(f"Successfully processed and saved to:\n{output_file}")
