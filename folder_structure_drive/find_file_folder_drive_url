@@ -3,7 +3,7 @@ function listFilesAndFoldersInFolder() {
   sheet.clear();
   sheet.appendRow(["Name", "URL", "Type"]); // Added a "Type" column for clarity
   
-  var folderId = "1xXgnYuQprpsGoGZaotdKxGTNkO-A4xiX"; 
+  var folderId = "insert folder ID"; 
   
   try {
     var folder = DriveApp.getFolderById(folderId);
