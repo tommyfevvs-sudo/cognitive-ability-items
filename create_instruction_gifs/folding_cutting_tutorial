@@ -1,0 +1,269 @@
+import os
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+import matplotlib.colors as mcolors
+import matplotlib.font_manager as fm
+from matplotlib.path import Path
+from shapely.geometry import Polygon
+from shapely.ops import unary_union
+from PIL import Image
+import io
+
+# --- 1. DIRECTORY & SETUP ---
+desktop = os.path.join(os.path.expanduser("~"), "Desktop")
+output_dir = os.path.join(desktop, "Folding_Cutting_CMS_Perfect")
+if not os.path.exists(output_dir): os.makedirs(output_dir)
+
+PAPER_COLOR, FOLDED_COLOR = '#d6eaf8', '#aed6f1'
+
+# Master Bounds (Applies to ALL panels across static strips and GIFs)
+L_HORIZ, R_HORIZ = -0.22, 1.22 
+L_VERT, R_VERT = 0.08, 0.92 
+
+INST_CUTS = [
+    [[0.9, 0.1], [0.85, 0.1], [0.9, 0.15]], # Corner
+    [[0.5, 0.25], [0.55, 0.3], [0.5, 0.35]], # Left Edge
+    [[0.9, 0.3], [0.85, 0.35], [0.9, 0.4]]   # Right Edge
+]
+
+Q_BR = [Polygon(c) for c in INST_CUTS]
+Q_TR = [Polygon([[p[0], 1-p[1]] for p in c]) for c in INST_CUTS]
+Q_BL = [Polygon([[1-p[0], p[1]] for p in c]) for c in INST_CUTS]
+Q_TL = [Polygon([[1-p[0], 1-p[1]] for p in c]) for c in INST_CUTS]
+
+def get_proxima_soft_paths():
+    font_dirs = [os.path.expanduser("~/Library/Fonts"), "/Library/Fonts", "/System/Library/Fonts"]
+    for font_dir in font_dirs:
+        try:
+            fonts = [f for f in os.listdir(font_dir) if 'proxima' in f.lower() and 'soft' in f.lower() 
+                    and not any(x in f.lower() for x in ['bold', 'italic', 'semibold', 'light', 'black']) 
+                    and f.lower().endswith(('.ttf', '.otf'))]
+            if fonts: return fm.FontProperties(fname=os.path.join(font_dir, fonts[0]))
+        except Exception: pass
+    return None
+custom_font = get_proxima_soft_paths()
+
+def blend_color(c1, c2, factor):
+    rgb1, rgb2 = np.array(mcolors.to_rgb(c1)), np.array(mcolors.to_rgb(c2))
+    return mcolors.to_hex(rgb1 * (1 - factor) + rgb2 * factor)
+
+# --- 2. PERFECT 3D WARP PROJECTIONS ---
+TILT = 0.02 
+
+def proj_fold_h(pts, angle):
+    x, y = pts[:,0], pts[:,1]
+    x_new = 0.5 + (x - 0.5) * np.cos(angle)
+    y_new = y + ((0.5 - x) / 0.4) * TILT * np.sin(angle) * ((y - 0.5) / 0.4)
+    return np.column_stack([x_new, y_new])
+
+def proj_fold_v(pts, angle):
+    x, y = pts[:,0], pts[:,1]
+    y_new = 0.5 + (y - 0.5) * np.cos(angle)
+    x_new = x + ((y - 0.5) / 0.4) * TILT * np.sin(angle) * ((x - 0.7) / 0.2)
+    return np.column_stack([x_new, y_new])
+
+def proj_unfold_v(pts, angle):
+    x, y = pts[:,0], pts[:,1]
+    y_new = 0.5 + (y - 0.5) * np.cos(np.pi - angle)
+    x_new = x + ((y - 0.5) / 0.4) * TILT * np.sin(angle) * ((x - 0.7) / 0.2)
+    return np.column_stack([x_new, y_new])
+
+def proj_unfold_h(pts, angle):
+    x, y = pts[:,0], pts[:,1]
+    x_new = 0.5 + (x - 0.5) * np.cos(np.pi - angle)
+    y_new = y + ((0.5 - x) / 0.4) * TILT * np.sin(angle) * ((y - 0.5) / 0.4)
+    return np.column_stack([x_new, y_new])
+
+# --- 3. RENDERING ENGINE ---
+def draw_utils(ax, show_folds=True):
+    bg_style = {'color': 'gray', 'lw': 0.6, 'zorder': 5}
+    tick_style = {'color': 'black', 'lw': 0.6, 'zorder': 5}
+    ax.plot([0.5, 0.5], [0.075, 0.1], **tick_style); ax.plot([0.5, 0.5], [0.9, 0.925], **tick_style)
+    ax.plot([0.075, 0.1], [0.5, 0.5], **tick_style); ax.plot([0.9, 0.925], [0.5, 0.5], **tick_style)
+    ax.add_patch(patches.Rectangle((0.1, 0.1), 0.8, 0.8, fill=False, linestyle='--', **bg_style))
+    
+    # CMS FIX: Only draw internal fold lines if show_folds is True
+    if show_folds:
+        ax.plot([0.5, 0.5], [0.1, 0.9], linestyle='--', **bg_style)
+        ax.plot([0.1, 0.9], [0.5, 0.5], linestyle='--', **bg_style)
+
+def setup_center_canvas(show_folds=True):
+    fig, axes = plt.subplots(1, 3, figsize=(12, 4), facecolor='white')
+    for ax in axes:
+        ax.set_axis_off(); ax.set_xlim(L_HORIZ, R_HORIZ); ax.set_ylim(L_VERT, R_VERT);
+        ax.set_aspect('equal')
+        ax.add_patch(patches.Rectangle((L_HORIZ, L_VERT), R_HORIZ-L_HORIZ, R_VERT-L_VERT, fill=False, edgecolor='none', zorder=-100))
+    
+    draw_utils(axes[1], show_folds=show_folds) 
+    return fig, axes[1]
+
+def get_pil_frame(fig):
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', dpi=120, bbox_inches='tight', pad_inches=0.1) 
+    buf.seek(0)
+    img = Image.open(buf).convert('RGB')
+    plt.close(fig)
+    return img
+
+def draw_poly_with_holes(ax, poly, proj_func=None, angle=None, facecolor=PAPER_COLOR, zorder=20):
+    polys = poly.geoms if hasattr(poly, "geoms") else [poly]
+    for geom in polys:
+        ext_coords = np.array(geom.exterior.coords)
+        if proj_func: ext_coords = proj_func(ext_coords, angle)
+        vertices = list(ext_coords)
+        codes = [Path.MOVETO] + [Path.LINETO] * (len(ext_coords) - 2) + [Path.CLOSEPOLY]
+        for interior in geom.interiors:
+            int_coords = np.array(interior.coords)
+            if proj_func: int_coords = proj_func(int_coords, angle)
+            vertices.extend(list(int_coords))
+            codes.extend([Path.MOVETO] + [Path.LINETO] * (len(int_coords) - 2) + [Path.CLOSEPOLY])
+        path = Path(vertices, codes)
+        patch = patches.PathPatch(path, facecolor=facecolor, edgecolor='black', lw=0.8, zorder=zorder)
+        ax.add_patch(patch)
+
+# --- 4. GIF GENERATORS ---
+def make_folding_gif():
+    frames_fwd = []
+    p_l = Polygon([(0.1, 0.1), (0.5, 0.1), (0.5, 0.9), (0.1, 0.9)])
+    for i, angle in enumerate(np.linspace(0, np.pi, 20)):
+        fig, ax = setup_center_canvas(show_folds=(i > 0))
+        # If fully open, render the full contiguous paper
+        if i == 0:
+            full_paper = Polygon([(0.1, 0.1), (0.9, 0.1), (0.9, 0.9), (0.1, 0.9)])
+            draw_poly_with_holes(ax, full_paper, facecolor=PAPER_COLOR, zorder=20)
+        else:
+            draw_poly_with_holes(ax, Polygon([(0.5, 0.1), (0.9, 0.1), (0.9, 0.9), (0.5, 0.9)]), facecolor=PAPER_COLOR, zorder=20)
+            flap_color = blend_color(PAPER_COLOR, FOLDED_COLOR, angle / np.pi)
+            draw_poly_with_holes(ax, p_l, proj_func=proj_fold_h, angle=angle, facecolor=flap_color, zorder=25)
+        frames_fwd.append(get_pil_frame(fig))
+        
+    p_tr = Polygon([(0.5, 0.5), (0.9, 0.5), (0.9, 0.9), (0.5, 0.9)])
+    for i, angle in enumerate(np.linspace(0, np.pi, 20)):
+        fig, ax = setup_center_canvas(show_folds=True)
+        # If halfway open, render a single contiguous half paper
+        if i == 0:
+            half_paper = Polygon([(0.5, 0.1), (0.9, 0.1), (0.9, 0.9), (0.5, 0.9)])
+            draw_poly_with_holes(ax, half_paper, facecolor=FOLDED_COLOR, zorder=20)
+        else:
+            draw_poly_with_holes(ax, Polygon([(0.5, 0.1), (0.9, 0.1), (0.9, 0.5), (0.5, 0.5)]), facecolor=FOLDED_COLOR, zorder=20)
+            draw_poly_with_holes(ax, p_tr, proj_func=proj_fold_v, angle=angle, facecolor=FOLDED_COLOR, zorder=25)
+        frames_fwd.append(get_pil_frame(fig))
+        
+    hold_folded = [frames_fwd[-1]] * 20
+    backward_anim = frames_fwd[::-1]
+    hold_open = [frames_fwd[0]] * 15
+    
+    final_loop = frames_fwd + hold_folded + backward_anim + hold_open
+    final_loop[0].save(os.path.join(output_dir, "gif_1_folding_loop.gif"), save_all=True, append_images=final_loop[1:], duration=60, loop=0)
+
+def make_cuts_gif():
+    frames = []
+    paper = Polygon([(0.5, 0.1), (0.9, 0.1), (0.9, 0.5), (0.5, 0.5)])
+    
+    fig, ax = setup_center_canvas(show_folds=True)
+    draw_poly_with_holes(ax, paper, facecolor=FOLDED_COLOR)
+    start_frame = get_pil_frame(fig)
+    for _ in range(10): frames.append(start_frame)
+
+    for cut_coords in INST_CUTS:
+        cut_poly = Polygon(cut_coords)
+        paper_next = paper.difference(cut_poly)
+        for slide in np.linspace(0.0, 0.15, 12):
+            fig, ax = setup_center_canvas(show_folds=True)
+            draw_poly_with_holes(ax, paper_next, facecolor=FOLDED_COLOR, zorder=20)
+            dir_x = 1 if cut_coords[0][0] > 0.7 else -1
+            pts = np.array(cut_coords) + [slide * dir_x, slide]
+            ax.add_patch(patches.Polygon(pts, facecolor=FOLDED_COLOR, edgecolor='black', alpha=max(0, 1-slide*6), lw=0.8, zorder=25))
+            frames.append(get_pil_frame(fig))
+        paper = paper_next
+        fig, ax = setup_center_canvas(show_folds=True)
+        draw_poly_with_holes(ax, paper, facecolor=FOLDED_COLOR)
+        hold_frame = get_pil_frame(fig)
+        for _ in range(5): frames.append(hold_frame)
+
+    frames[0].save(os.path.join(output_dir, "gif_2_cuts.gif"), save_all=True, append_images=frames[1:], duration=70, loop=0)
+
+def make_unfolding_gif():
+    frames_fwd = []
+    for i, angle in enumerate(np.linspace(0, np.pi, 20)):
+        fig, ax = setup_center_canvas(show_folds=True)
+        # Reconstruct half paper as a single polygon when halfway open
+        if i == 19:
+            half_paper = Polygon([(0.5, 0.1), (0.9, 0.1), (0.9, 0.9), (0.5, 0.9)]).difference(unary_union(Q_BR + Q_TR))
+            draw_poly_with_holes(ax, half_paper, facecolor=FOLDED_COLOR, zorder=20)
+        else:
+            p_br = Polygon([(0.5, 0.1), (0.9, 0.1), (0.9, 0.5), (0.5, 0.5)]).difference(unary_union(Q_BR))
+            draw_poly_with_holes(ax, p_br, facecolor=FOLDED_COLOR, zorder=20)
+            flap = Polygon([(0.5, 0.5), (0.9, 0.5), (0.9, 0.9), (0.5, 0.9)]).difference(unary_union(Q_TR))
+            draw_poly_with_holes(ax, flap, proj_func=proj_unfold_v, angle=angle, facecolor=FOLDED_COLOR, zorder=25)
+        frames_fwd.append(get_pil_frame(fig))
+
+    for i, angle in enumerate(np.linspace(0, np.pi, 20)):
+        fig, ax = setup_center_canvas(show_folds=(i < 19))
+        # Reconstruct full paper as a single polygon when fully open
+        if i == 19:
+            full_paper = Polygon([(0.1, 0.1), (0.9, 0.1), (0.9, 0.9), (0.1, 0.9)]).difference(unary_union(Q_BR + Q_TR + Q_BL + Q_TL))
+            draw_poly_with_holes(ax, full_paper, facecolor=PAPER_COLOR, zorder=20)
+        else:
+            p_r = Polygon([(0.5, 0.1), (0.9, 0.1), (0.9, 0.9), (0.5, 0.9)]).difference(unary_union(Q_BR + Q_TR))
+            draw_poly_with_holes(ax, p_r, facecolor=PAPER_COLOR, zorder=20)
+            flap = Polygon([(0.1, 0.1), (0.5, 0.1), (0.5, 0.9), (0.1, 0.9)]).difference(unary_union(Q_BL + Q_TL))
+            flap_color = blend_color(FOLDED_COLOR, PAPER_COLOR, angle / np.pi)
+            draw_poly_with_holes(ax, flap, proj_func=proj_unfold_h, angle=angle, facecolor=flap_color, zorder=25)
+        frames_fwd.append(get_pil_frame(fig))
+
+    hold_unfolded = [frames_fwd[-1]] * 25
+    backward_anim = frames_fwd[::-1]      
+    hold_folded = [frames_fwd[0]] * 15    
+    
+    final_loop = frames_fwd + hold_unfolded + backward_anim + hold_folded
+    final_loop[0].save(os.path.join(output_dir, "gif_3_unfold_loop.gif"), save_all=True, append_images=final_loop[1:], duration=60, loop=0)
+
+# --- 5. STATIC ASSET GENERATOR ---
+def make_static_assets():
+    q_br = INST_CUTS
+    q_tr = [[[p[0], 1-p[1]] for p in c] for c in q_br]
+    q_bl = [[[1-p[0], p[1]] for p in c] for c in q_br]
+    q_tl = [[[1-p[0], 1-p[1]] for p in c] for c in q_br]
+    
+    options_data = [
+        q_br + q_bl + q_tr + q_tl, q_br + q_bl, q_br + q_tr, q_br + q_bl + q_tr,        
+        q_br + [[[p[0]-0.4, p[1]] for p in c] for c in q_br] + [[[p[0], p[1]+0.4] for p in c] for c in q_br] + [[[p[0]-0.4, p[1]+0.4] for p in c] for c in q_br] 
+    ]
+
+    fig_f, axes = plt.subplots(1, 3, figsize=(12, 4), facecolor='white')
+    for i, ax in enumerate(axes):
+        ax.set_axis_off(); ax.set_xlim(L_HORIZ, R_HORIZ); ax.set_ylim(L_VERT, R_VERT); ax.set_aspect('equal')
+        # Only show folds on the intermediate steps
+        draw_utils(ax, show_folds=(i > 0))
+        if i == 0: ax.add_patch(patches.Rectangle((0.1, 0.1), 0.8, 0.8, facecolor=PAPER_COLOR, edgecolor='black', lw=0.75, zorder=10))
+        elif i == 1:
+            ax.add_patch(patches.Rectangle((0.5, 0.1), 0.4, 0.8, facecolor=FOLDED_COLOR, edgecolor='black', lw=0.75, zorder=10))
+            ax.annotate('', xy=(0.62, 0.5), xytext=(0.38, 0.5), arrowprops=dict(arrowstyle="->", connectionstyle="arc3,rad=.5", lw=2.0), zorder=60)
+        elif i == 2:
+            ax.add_patch(patches.Rectangle((0.5, 0.1), 0.4, 0.4, facecolor=FOLDED_COLOR, edgecolor='black', lw=0.75, zorder=10))
+            ax.annotate('', xy=(0.7, 0.38), xytext=(0.7, 0.62), arrowprops=dict(arrowstyle="->", connectionstyle="arc3,rad=.5", lw=2.0), zorder=60)
+    fig_f.savefig(os.path.join(output_dir, "static_1_folds.png"), dpi=300, bbox_inches='tight', pad_inches=0.1); plt.close(fig_f)
+
+    fig_c, ax_c = setup_center_canvas(show_folds=True)
+    draw_poly_with_holes(ax_c, Polygon([(0.5, 0.1), (0.9, 0.1), (0.9, 0.5), (0.5, 0.5)]).difference(unary_union(Q_BR)), facecolor=FOLDED_COLOR)
+    fig_c.savefig(os.path.join(output_dir, "static_2_cuts.png"), dpi=300, bbox_inches='tight', pad_inches=0.1); plt.close(fig_c)
+
+    fig_a, axes_a = plt.subplots(1, 5, figsize=(18, 5), facecolor='white')
+    for i, ax in enumerate(axes_a):
+        ax.set_axis_off(); ax.set_xlim(0.05, 0.95); ax.set_ylim(0.05, 0.95); ax.set_aspect('equal')
+        draw_utils(ax, show_folds=False) # Answers should NOT have fold lines
+        paper = Polygon([(0.1, 0.1), (0.9, 0.1), (0.9, 0.9), (0.1, 0.9)])
+        draw_poly_with_holes(ax, paper.difference(unary_union([Polygon(c) for c in options_data[i]])), facecolor=PAPER_COLOR)
+        kwargs = {'fontsize': 24, 'ha': 'center', 'transform': ax.transAxes}
+        if custom_font: kwargs['fontproperties'] = custom_font
+        ax.text(0.5, -0.15, chr(65+i), **kwargs) 
+    fig_a.savefig(os.path.join(output_dir, "static_3_answers.png"), dpi=300, bbox_inches='tight', pad_inches=0.1); plt.close(fig_a)
+
+if __name__ == "__main__":
+    make_folding_gif()
+    make_cuts_gif()
+    make_unfolding_gif()
+    make_static_assets()
+    print(f"Updated CMS-synced guide generated in: {output_dir}")

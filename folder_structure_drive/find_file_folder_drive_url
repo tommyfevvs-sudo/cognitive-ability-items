@@ -1,0 +1,34 @@
+function listFilesAndFoldersInFolder() {
+  var sheet = SpreadsheetApp.getActiveSheet();
+  sheet.clear();
+  sheet.appendRow(["Name", "URL", "Type"]); // Added a "Type" column for clarity
+  
+  var folderId = "1xXgnYuQprpsGoGZaotdKxGTNkO-A4xiX"; 
+  
+  try {
+    var folder = DriveApp.getFolderById(folderId);
+    var data = [];
+    
+    // 1. GET SUB-FOLDERS
+    var subFolders = folder.getFolders();
+    while (subFolders.hasNext()) {
+      var subFolder = subFolders.next();
+      data.push([subFolder.getName(), subFolder.getUrl(), "Folder"]);
+    }
+    
+    // 2. GET FILES
+    var files = folder.getFiles(); 
+    while (files.hasNext()) {
+      var file = files.next();
+      data.push([file.getName(), file.getUrl(), "File"]);
+    }
+    
+    // Write everything to the sheet
+    if(data.length > 0) {
+      sheet.getRange(2, 1, data.length, 3).setValues(data);
+    }
+    
+  } catch (e) {
+    SpreadsheetApp.getUi().alert("Error: " + e.toString());
+  }
+}
