@@ -1,0 +1,296 @@
+import os
+import random
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+from matplotlib.path import Path
+from matplotlib import font_manager
+from PIL import Image
+
+# --- MacOS Font Discovery ---
+def find_proxima_soft_macos():
+    search_dirs = [os.path.expanduser("~/Library/Fonts"), "/Library/Fonts", "/System/Library/Fonts", "/System/Library/Fonts/Supplemental"]
+    targets = ["Proxima Soft Semibold.otf", "ProximaSoft-Bold.otf", "Proxima Soft Bold.otf", "proximasoft-bold.otf", "ProximaSoft-Bold.ttf"]
+    for directory in search_dirs:
+        if os.path.exists(directory):
+            for filename in os.listdir(directory):
+                if any(t in filename for t in targets) or "proximasoft" in filename.lower():
+                    path = os.path.join(directory, filename)
+                    return path if os.path.isfile(path) else None
+    return None
+
+FOUND_FONT_PATH = find_proxima_soft_macos()
+CUSTOM_FONT_NAME = font_manager.FontProperties(fname=FOUND_FONT_PATH).get_name() if FOUND_FONT_PATH else "sans-serif"
+
+BASE_COLORS = [(173/255, 216/255, 230/255), (255/255, 192/255, 203/255), (180/255, 230/255, 180/255), (255/255, 220/255, 150/255)]
+SHAPE_POOL = ["arrow", "pentagon", "trapezoid", "circle", "rect", "square", "hexagon", "triangle", "scalene", "semicircle"]
+
+def get_shape_path(stype, pos, size, rotation):
+    x, y = pos
+    if stype == "circle": return Path.circle((x, y), size * 0.82)
+    if stype == "semicircle":
+        theta = np.linspace(0, np.pi, 50)
+        verts = np.column_stack([size * np.cos(theta), size * np.sin(theta)])
+    elif stype == "scalene": verts = np.array([[-size, -size*0.4], [size*0.8, -size*0.7], [-size*0.2, size]])
+    elif stype == "rect": verts = np.array([[-size, -size*0.5], [size, -size*0.5], [size, size*0.5], [-size, size*0.5]])
+    elif stype == "square": verts = np.array([[-size*0.7, -size*0.7], [size*0.7, -size*0.7], [size*0.7, size*0.7], [-size*0.7, size*0.7]])
+    elif stype == "triangle": verts = np.array([[0, size * 0.9], [size * 0.8, -size * 0.6], [-size * 0.8, -size * 0.6]])
+    elif stype == "hexagon": verts = np.array([[size * 0.9 * np.cos(np.radians(i*60)), size * 0.9 * np.sin(np.radians(i*60))] for i in range(6)])
+    elif stype == "pentagon": verts = np.array([[size * 0.9 * np.cos(np.radians(i*72-90)), size * 0.9 * np.sin(np.radians(i*72-90))] for i in range(5)])
+    elif stype == "arrow": 
+        verts = np.array([[-size, -size*0.2], [0, -size*0.2], [0, -size*0.4], [size, 0], [0, size*0.4], [0, size*0.2], [-size, size*0.2]])
+    elif stype == "trapezoid": verts = np.array([[-size, -size*0.5], [size, -size*0.5], [size*0.6, size*0.5], [-size*0.6, size*0.5]])
+    
+    angle = np.radians(rotation)
+    R = np.array([[np.cos(angle), -np.sin(angle)], [np.sin(angle), np.cos(angle)]])
+    rotated_verts = np.dot(verts, R.T) + pos
+    return Path(np.concatenate([rotated_verts, [rotated_verts[0]]]), [Path.MOVETO] + [Path.LINETO]*(len(rotated_verts)-1) + [Path.CLOSEPOLY])
+
+def generate_animated_puzzle(index, output_dir="."):
+    num_shapes = 5
+    num_options = 5
+    fill_color = random.choice(BASE_COLORS)
+    edge_color = (0, 0, 0)
+    base_name = f"example_{index:03d}"
+    
+    types = random.sample(SHAPE_POOL, num_shapes)
+    unique_rots = [random.randint(0, 359) for _ in range(num_shapes)]
+
+    # --- 1. Setup Main Puzzle Shapes ---
+    success = False
+    while not success:
+        shapes_metadata = []
+        s0_pos = (400, 420) 
+        # Track parent_idx = -1 for the base shape
+        shapes_metadata.append({'type': types[0], 'pos': s0_pos, 'rot': unique_rots[0], 'path': get_shape_path(types[0], s0_pos, 85, unique_rots[0]), 'parent_idx': -1})
+
+        all_placed = True
+        for i in range(1, num_shapes):
+            placed = False
+            for _ in range(2000):
+                # Pick a parent and remember its index
+                parent_idx = random.randint(0, len(shapes_metadata) - 1)
+                parent = shapes_metadata[parent_idx]
+                
+                angle, dist = random.uniform(0, 2*np.pi), random.uniform(105, 145)
+                nx, ny = parent['pos'][0] + dist*np.cos(angle), parent['pos'][1] + dist*np.sin(angle)
+                
+                if nx < 100 or nx > 700 or ny < 250 or ny > 600: continue
+                
+                npth = get_shape_path(types[i], (nx, ny), 85, unique_rots[i])
+                if npth.intersects_path(parent['path'], filled=True):
+                    if all(np.linalg.norm(np.array([nx, ny]) - np.array(s['pos'])) > 90 for s in shapes_metadata):
+                        shapes_metadata.append({'type': types[i], 'pos': (nx, ny), 'rot': unique_rots[i], 'path': npth, 'parent_idx': parent_idx})
+                        placed = True; break
+            if not placed: all_placed = False; break
+        if all_placed: success = True
+
+    # Center the cluster horizontally
+    x_min, x_max, y_min, y_max = 999, -999, 999, -999
+    for s in shapes_metadata:
+        ext = s['path'].get_extents()
+        x_min, x_max = min(x_min, ext.x0), max(x_max, ext.x1)
+        y_min, y_max = min(y_min, ext.y0), max(y_max, ext.y1)
+        
+    shift_x = 400 - (x_min + x_max) / 2
+    for s in shapes_metadata:
+        s['pos'] = (s['pos'][0] + shift_x, s['pos'][1])
+        s['path'] = get_shape_path(s['type'], s['pos'], 85, s['rot'])
+
+    # --- 2. Setup Options Strip ---
+    TOTAL_WIDTH = 800
+    SLOT_WIDTH = TOTAL_WIDTH / num_options
+    TARGET_Y_CENTER = 90
+    SHAPE_SIZE_OPT = 60
+    
+    indices = [0] + random.sample(range(1, len(shapes_metadata)), num_options - 1)
+    presentation = list(range(len(indices)))
+    random.shuffle(presentation)
+    
+    options_metadata = []
+    correct_target_pos = None
+    
+    for i, slot in enumerate(presentation):
+        idx = indices[slot]
+        meta = shapes_metadata[idx]
+        slot_x_center = (SLOT_WIDTH / 2) + (i * SLOT_WIDTH)
+        
+        options_metadata.append({
+            'type': meta['type'],
+            'pos': (slot_x_center, TARGET_Y_CENTER),
+            'rot': meta['rot'],
+            'label': chr(65 + i)
+        })
+        if slot == 0:
+            correct_target_pos = (slot_x_center, TARGET_Y_CENTER)
+
+    # ==========================================
+    # --- SAVE ORIGINAL STYLE STATIC IMAGES  ---
+    # ==========================================
+    print(f"[{base_name}] Generating Static Images...")
+    fig_p, ax_p = plt.subplots(figsize=(8, 4.5), dpi=300)
+    ax_p.set_aspect('equal'); ax_p.axis('off')
+    for i, s in enumerate(shapes_metadata):
+        ax_p.add_patch(patches.PathPatch(s['path'], facecolor=fill_color, edgecolor=edge_color, lw=1.4, zorder=i, joinstyle='miter'))
+    ax_p.set_xlim(0, 800)
+    ax_p.set_ylim(y_min - 1.5, y_max + 1.5) 
+    fig_p.set_size_inches(8, ((y_max - y_min + 3.0) / 800.0) * 8.0)
+    plt.savefig(f"{output_dir}/{base_name}_puzz.png", transparent=True, pad_inches=0)
+    plt.close(fig_p)
+
+    fig_o, ax_o = plt.subplots(figsize=(num_options * 2, 2.0), dpi=300)
+    ax_o.set_aspect('equal'); ax_o.axis('off')
+    opt_min_y, opt_max_y = 999, -999
+    
+    temp_paths = []
+    for opt in options_metadata:
+        pth = get_shape_path(opt['type'], opt['pos'], SHAPE_SIZE_OPT, opt['rot'])
+        temp_paths.append(pth)
+        if pth.get_extents().y0 < opt_min_y: opt_min_y = pth.get_extents().y0
+        if pth.get_extents().y1 > opt_max_y: opt_max_y = pth.get_extents().y1
+
+    for i, p_opt in enumerate(temp_paths):
+        ax_o.add_patch(patches.PathPatch(p_opt, facecolor=fill_color, edgecolor=edge_color, lw=1.1, joinstyle='miter'))
+        ax_o.text((p_opt.get_extents().x0 + p_opt.get_extents().x1) / 2, opt_min_y - 15, options_metadata[i]['label'], 
+                    fontname=CUSTOM_FONT_NAME, fontsize=14, ha='center', va='top')
+    ax_o.set_xlim(0, TOTAL_WIDTH)
+    ax_o.set_ylim(opt_min_y - 40, opt_max_y + 2)
+    plt.savefig(f"{output_dir}/{base_name}_opts.png", bbox_inches='tight', pad_inches=0.0, transparent=True)
+    plt.close(fig_o)
+
+
+    # ==========================================
+    # --- ANIMATION FRAMEWORK (Unified Canvas) --
+    # ==========================================
+    print(f"[{base_name}] Generating Animation Frames...")
+    frames = []
+    fig, ax = plt.subplots(figsize=(8, 6.5), dpi=150)
+    
+    # ----------------------------------------------------
+    # Hierarchical Unstacking Vectors
+    # ----------------------------------------------------
+    D = {0: np.array([0.0, 0.0])} # Cumulative displacement vectors
+    explode_targets = {}
+    
+    for i in range(1, len(shapes_metadata)):
+        s = shapes_metadata[i]
+        p_idx = s['parent_idx']
+        p_pos = shapes_metadata[p_idx]['pos']
+        
+        # Calculate outward vector from its specific parent
+        dx = s['pos'][0] - p_pos[0]
+        dy = s['pos'][1] - p_pos[1]
+        dist = np.hypot(dx, dy)
+        if dist == 0: 
+            dx, dy, dist = 1, 0, 1
+            
+        # Push 90 units away from parent
+        local_push = np.array([(dx/dist) * 90, (dy/dist) * 90])
+        
+        # Child inherits parent's movement, then adds its own push
+        D[i] = D[p_idx] + local_push
+        
+        target_x = s['pos'][0] + D[i][0]
+        target_y = s['pos'][1] + D[i][1]
+        
+        # Clamp firmly within safe visual bounds
+        target_x = max(90, min(710, target_x))
+        target_y = max(220, min(580, target_y))
+        
+        explode_targets[i] = (target_x, target_y)
+
+    def draw_frame(phase, progress):
+        ax.clear()
+        ax.set_aspect('equal')
+        ax.axis('off')
+        ax.set_xlim(0, 800)
+        ax.set_ylim(0, 650)
+        
+        # Draw options strip
+        for opt in options_metadata:
+            opt_path = get_shape_path(opt['type'], opt['pos'], SHAPE_SIZE_OPT, opt['rot'])
+            ax.add_patch(patches.PathPatch(opt_path, facecolor=fill_color, edgecolor=edge_color, lw=1.1, joinstyle='miter'))
+            ax.text(opt['pos'][0], opt['pos'][1] - 80, opt['label'], fontname=CUSTOM_FONT_NAME, fontsize=14, ha='center', va='top')
+        
+        for i, s in enumerate(shapes_metadata):
+            current_pos = s['pos']
+            current_alpha = 1.0
+            
+            if phase == "explode":
+                if i != 0: 
+                    target = explode_targets[i]
+                    start_pos = s['pos']
+                    current_pos = (start_pos[0] + (target[0] - start_pos[0]) * progress, 
+                                   start_pos[1] + (target[1] - start_pos[1]) * progress)
+                    current_alpha = 1.0 - (0.8 * progress) 
+            
+            elif phase == "translate":
+                if i != 0:
+                    current_pos = explode_targets[i]
+                    current_alpha = 0.2
+                else: 
+                    start_pos = s['pos']
+                    current_pos = (start_pos[0] + (correct_target_pos[0] - start_pos[0]) * progress, 
+                                   start_pos[1] + (correct_target_pos[1] - start_pos[1]) * progress)
+
+            elif phase == "pause":
+                if i != 0:
+                    current_pos = explode_targets[i]
+                    current_alpha = 0.2
+                else:
+                    current_pos = correct_target_pos
+
+            # Determine scale during translation (shrink to option size)
+            current_size = 85
+            if phase == "translate" and i == 0:
+                current_size = 85 - ((85 - SHAPE_SIZE_OPT) * progress)
+            elif phase == "pause" and i == 0:
+                current_size = SHAPE_SIZE_OPT
+
+            # Draw shape
+            path = get_shape_path(s['type'], current_pos, current_size, s['rot'])
+            facecolor_with_alpha = (*fill_color, current_alpha)
+            edgecolor_with_alpha = (*edge_color, current_alpha)
+            
+            ax.add_patch(patches.PathPatch(path, facecolor=facecolor_with_alpha, edgecolor=edgecolor_with_alpha, lw=1.4, zorder=i+10, joinstyle='miter'))
+
+        # Render frame
+        fig.canvas.draw()
+        rgba_buffer = np.asarray(fig.canvas.buffer_rgba())
+        return Image.fromarray(rgba_buffer).convert('RGB')
+
+    # Build sequence
+    for _ in range(10): frames.append(draw_frame("explode", 0.0))
+    for i in range(1, 21): frames.append(draw_frame("explode", i / 20.0))
+    for i in range(1, 26): frames.append(draw_frame("translate", i / 25.0))
+    pause_frame = draw_frame("pause", 1.0)
+    for _ in range(30): frames.append(pause_frame)
+    
+    # Reverse loop
+    frames.extend(frames[::-1])
+
+    print(f"[{base_name}] Saving GIF...")
+    frames[0].save(
+        f"{output_dir}/{base_name}_animation.gif",
+        save_all=True,
+        append_images=frames[1:],
+        duration=33,
+        loop=0
+    )
+    plt.close()
+    print(f"[{base_name}] Finished!\n")
+
+if __name__ == "__main__":
+    out_dir = os.path.expanduser("~/Desktop/Animated_Layering")
+    os.makedirs(out_dir, exist_ok=True)
+    
+    try:
+        num_items = int(input("How many examples would you like to generate? "))
+    except ValueError:
+        print("Invalid input. Generating 1 example by default.")
+        num_items = 1
+        
+    for idx in range(1, num_items + 1):
+        generate_animated_puzzle(idx, out_dir)
+        
+    print(f"All done! Your files are saved in {out_dir}")
